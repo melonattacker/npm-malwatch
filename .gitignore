@@ -1,0 +1,7 @@
+node_modules
+.npm-malwatch
+*.log
+coverage
+.DS_Store
+npm-malwatch-fixture.tmp
+demos
