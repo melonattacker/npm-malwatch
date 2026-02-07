@@ -23,20 +23,69 @@ type PreflightOpts = {
 
 function usage(exitCode = 0): never {
   const msg =
+    "npm-malwatch (Deno CLI)\n" +
+    "\n" +
+    "Two modes:\n" +
+    "  1) Observed mode (default): run a command while injecting a Node preload hook.\n" +
+    "     - Records fs/child_process/dns/net/http(s) usage to JSONL.\n" +
+    "     - Prints a package-based summary at the end.\n" +
+    "  2) Preflight: run install with --ignore-scripts, then list lifecycle scripts found in node_modules.\n" +
+    "     - Does NOT execute preinstall/install/postinstall/prepare.\n" +
+    "\n" +
     "Usage:\n" +
     "  deno run -A deno/npm-malwatch.ts [options] -- <command...>\n" +
-    "  deno run -A deno/npm-malwatch.ts preflight [options] -- <pm install...>\n\n" +
-    "Options:\n" +
+    "  deno run -A deno/npm-malwatch.ts preflight [options] -- <pm install...>\n" +
+    "\n" +
+    "Examples:\n" +
+    "  # Observed: hook npm/pnpm lifecycle script execution\n" +
+    "  deno run -A deno/npm-malwatch.ts -- pnpm rebuild\n" +
+    "  deno run -A deno/npm-malwatch.ts -- npm install\n" +
+    "\n" +
+    "  # Preflight: install dependencies without running scripts, then list them\n" +
+    "  deno run -A deno/npm-malwatch.ts preflight -- pnpm install\n" +
+    "\n" +
+    "Observed mode options:\n" +
     "  --log-file <path>\n" +
+    "      Write JSONL events to this file.\n" +
+    "      Default: .npm-malwatch/<timestamp>-<pid>.jsonl\n" +
+    "\n" +
     "  --json-summary\n" +
+    "      Print the end-of-run summary as JSON (stdout).\n" +
+    "\n" +
     "  --include-pm\n" +
+    "      Include events/scripts attributed to the package manager itself (npm/pnpm).\n" +
+    "      Default: excluded (noise reduction).\n" +
+    "\n" +
     "  --no-summary\n" +
-    "  --hardening <detect|off>\n\n" +
+    "      Do not print the end-of-run summary (log only).\n" +
+    "\n" +
+    "  --hardening <detect|off>\n" +
+    "      detect: log a \"tamper\" event if hooks look replaced at runtime.\n" +
+    "      off:    disable tamper checks.\n" +
+    "      Default: detect\n" +
+    "\n" +
     "Preflight options:\n" +
     "  --format <text|json>\n" +
+    "      text: human-readable list (stdout).\n" +
+    "      json:  machine-readable report (stdout).\n" +
+    "      Default: text\n" +
+    "\n" +
     "  --output <path>\n" +
+    "      Always write the JSON report to this path.\n" +
+    "      Default: .npm-malwatch/preflight-<timestamp>-<pid>.json\n" +
+    "\n" +
     "  --max-packages <n>\n" +
-    "  --script-keys <csv>\n";
+    "      Maximum number of package.json files to scan (DoS protection).\n" +
+    "      Default: 20000\n" +
+    "\n" +
+    "  --script-keys <csv>\n" +
+    "      Comma-separated script keys to extract.\n" +
+    "      Default: preinstall,install,postinstall,prepare\n" +
+    "\n" +
+    "Notes:\n" +
+    "  - Observed mode requires Node.js (it injects a temporary preload .cjs via NODE_OPTIONS).\n" +
+    "  - Preflight automatically appends --ignore-scripts only for install-like commands.\n" +
+    "  - Deno permissions: -A is easiest; minimum is --allow-run --allow-read --allow-write --allow-env.\n";
   // eslint-disable-next-line no-console
   console.error(msg);
   Deno.exit(exitCode);
