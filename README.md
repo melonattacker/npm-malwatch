@@ -2,19 +2,16 @@
 
 `npm-malwatch` is a wrapper CLI that **visualizes** potentially dangerous Node.js API usage during package installation.
 
-It does **not** implement any detection/allowlist logic yet — it only records and summarizes API calls.
-
 ## Quick start
 
 ```bash
-npm run build
-
-npm-malwatch -- npm install
-npm-malwatch -- pnpm install
-npm-malwatch -- node your-script.js
+# observed (hooks via Node preload)
+deno run -A deno/npm-malwatch.ts -- npm install
+deno run -A deno/npm-malwatch.ts -- pnpm install
+deno run -A deno/npm-malwatch.ts -- node your-script.js
 
 # preflight (scripts are NOT executed)
-npm-malwatch preflight -- pnpm install
+deno run -A deno/npm-malwatch.ts preflight -- pnpm install
 ```
 
 ## What it records
@@ -47,15 +44,15 @@ Each call is appended as one JSON object per line (JSONL).
 ## Options
 
 ```bash
-npm-malwatch --log-file /tmp/malwatch.jsonl -- pnpm install
-npm-malwatch --json-summary -- node script.js
-npm-malwatch --include-pm -- npm install
-npm-malwatch --no-summary -- pnpm install
-npm-malwatch --hardening detect -- pnpm install
+deno run -A deno/npm-malwatch.ts --log-file /tmp/malwatch.jsonl -- pnpm install
+deno run -A deno/npm-malwatch.ts --json-summary -- node script.js
+deno run -A deno/npm-malwatch.ts --include-pm -- npm install
+deno run -A deno/npm-malwatch.ts --no-summary -- pnpm install
+deno run -A deno/npm-malwatch.ts --hardening detect -- pnpm install
 
 # preflight options
-npm-malwatch preflight --format text --output .npm-malwatch/preflight.json -- pnpm install
-npm-malwatch preflight --format json -- pnpm install
+deno run -A deno/npm-malwatch.ts preflight --format text --output .npm-malwatch/preflight.json -- pnpm install
+deno run -A deno/npm-malwatch.ts preflight --format json -- pnpm install
 ```
 
 ## Recommended workflow
@@ -63,7 +60,7 @@ npm-malwatch preflight --format json -- pnpm install
 1) **Preflight** (no scripts executed):
 
 ```bash
-npm-malwatch preflight -- pnpm install
+deno run -A deno/npm-malwatch.ts preflight -- pnpm install
 ```
 
 2) Review the report (what would run).
@@ -71,7 +68,7 @@ npm-malwatch preflight -- pnpm install
 3) If you decide to execute scripts, run an observed rebuild:
 
 ```bash
-npm-malwatch -- pnpm rebuild
+deno run -A deno/npm-malwatch.ts -- pnpm rebuild
 ```
 
 ## Notes on evasion resistance (important)
@@ -86,10 +83,8 @@ However, **100% reliable hooking is not realistic** in pure JavaScript:
 
 ## Development
 
-This repo is designed to work in restricted/offline environments by committing runnable `dist/*.cjs` outputs.
-
 ```bash
-npm test
+deno test -A
 ```
 
 ### "tamper" events

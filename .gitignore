@@ -4,4 +4,4 @@ node_modules
 coverage
 .DS_Store
 npm-malwatch-fixture.tmp
-demos
+demos/**

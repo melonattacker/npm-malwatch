@@ -1,0 +1,8 @@
+{
+  "tasks": {
+    "test": "deno test -A",
+    "demo:preflight": "cd demos/demo && deno run -A ../../deno/npm-malwatch.ts preflight -- pnpm install",
+    "demo:observe": "cd demos/demo && deno run -A ../../deno/npm-malwatch.ts -- pnpm rebuild"
+  }
+}
+

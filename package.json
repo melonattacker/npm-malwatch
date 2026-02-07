@@ -1,25 +1,19 @@
 {
   "name": "npm-malwatch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Visualize potentially dangerous Node.js API usage during npm/pnpm installs.",
   "license": "Apache-2.0",
-  "bin": {
-    "npm-malwatch": "dist/cli.cjs"
-  },
   "type": "commonjs",
   "files": [
-    "dist",
+    "deno",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "node scripts/build.js",
-    "pretest": "npm run build",
-    "test": "node --test"
+    "test": "deno test -A"
   },
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {
-  }
+  "dependencies": {}
 }
