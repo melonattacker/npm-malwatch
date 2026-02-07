@@ -113,29 +113,88 @@ export async function summarizeJsonl(logFile: string): Promise<Summary> {
 }
 
 export function formatSummaryText(summary: Summary): string {
+  const useColor = Deno.isatty(Deno.stdout.rid);
+  const BOLD = useColor ? "\x1b[1m" : "";
+  const DIM = useColor ? "\x1b[2m" : "";
+  const RESET = useColor ? "\x1b[0m" : "";
+
   const lines: string[] = [];
-  lines.push(`Total events: ${summary.totalEvents}`);
+  lines.push(`${BOLD}Total events:${RESET} ${summary.totalEvents}`);
   lines.push("");
-  lines.push("By package (counts):");
-  const pkgs = Object.entries(summary.byPackage).sort((a, b) => {
-    const ta = a[1].fs_read + a[1].fs_write + a[1].proc + a[1].dns + a[1].net;
-    const tb = b[1].fs_read + b[1].fs_write + b[1].proc + b[1].dns + b[1].net;
-    return tb - ta;
+
+  const pkgs = Object.entries(summary.byPackage)
+    .map(([pkg, c]) => ({
+      pkg,
+      ...c,
+      total: c.fs_read + c.fs_write + c.proc + c.dns + c.net
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  const maxRows = 50;
+  const rows = pkgs.slice(0, maxRows);
+  const hidden = pkgs.length - rows.length;
+
+  lines.push(`${BOLD}By package (top ${rows.length})${RESET}`);
+
+  const header = ["Package", "Total", "fs_r", "fs_w", "proc", "dns", "net"];
+  const tableRows: string[][] = rows.map((r) => [
+    r.pkg,
+    String(r.total),
+    String(r.fs_read),
+    String(r.fs_write),
+    String(r.proc),
+    String(r.dns),
+    String(r.net)
+  ]);
+
+  const maxPkgLen = 44;
+  const truncatePkg = (s: string): string => (s.length > maxPkgLen ? s.slice(0, maxPkgLen - 1) + "…" : s);
+
+  const widths = header.map((h, idx) => {
+    const col = idx === 0 ? [h, ...tableRows.map((r) => truncatePkg(r[idx]!))] : [h, ...tableRows.map((r) => r[idx]!)];
+    return Math.max(...col.map((s) => s.length));
   });
-  for (const [pkg, c] of pkgs) {
-    lines.push(`- ${pkg}: fs_read=${c.fs_read} fs_write=${c.fs_write} proc=${c.proc} dns=${c.dns} net=${c.net}`);
-  }
+
+  const padRight = (s: string, w: number) => (s.length >= w ? s : s + " ".repeat(w - s.length));
+  const padLeft = (s: string, w: number) => (s.length >= w ? s : " ".repeat(w - s.length) + s);
+
+  const renderRow = (cols: string[], isHeader = false): string => {
+    const rendered = cols.map((c, idx) => {
+      const cell = idx === 0 ? truncatePkg(c) : c;
+      const padded = idx === 0 ? padRight(cell, widths[idx]!) : padLeft(cell, widths[idx]!);
+      return padded;
+    });
+    const line = `| ${rendered.join(" | ")} |`;
+    return isHeader ? `${BOLD}${line}${RESET}` : line;
+  };
+
+  const sep = `+-${widths.map((w) => "-".repeat(w)).join("-+-")}-+`;
+  lines.push(`${DIM}${sep}${RESET}`);
+  lines.push(renderRow(header, true));
+  lines.push(`${DIM}${sep}${RESET}`);
+  for (const r of tableRows) lines.push(renderRow(r));
+  lines.push(`${DIM}${sep}${RESET}`);
+
+  if (hidden > 0) lines.push(`${DIM}… and ${hidden} more packages${RESET}`);
 
   if (summary.topHosts.length) {
     lines.push("");
-    lines.push("Top hosts (best-effort):");
-    for (const { host, count } of summary.topHosts) lines.push(`- ${host}: ${count}`);
+    lines.push(`${BOLD}Top hosts (best-effort)${RESET}`);
+    const wHost = Math.max("Host".length, ...summary.topHosts.map((h) => h.host.length));
+    const wCount = Math.max("Count".length, ...summary.topHosts.map((h) => String(h.count).length));
+    const sep2 = `+-${"-".repeat(wHost)}-+-${"-".repeat(wCount)}-+`;
+    lines.push(`${DIM}${sep2}${RESET}`);
+    lines.push(`${BOLD}| ${"Host".padEnd(wHost)} | ${"Count".padStart(wCount)} |${RESET}`);
+    lines.push(`${DIM}${sep2}${RESET}`);
+    for (const { host, count } of summary.topHosts) {
+      lines.push(`| ${host.padEnd(wHost)} | ${String(count).padStart(wCount)} |`);
+    }
+    lines.push(`${DIM}${sep2}${RESET}`);
   }
   if (summary.topCommands.length) {
     lines.push("");
-    lines.push("Top commands (best-effort):");
-    for (const { cmd, count } of summary.topCommands) lines.push(`- ${cmd}: ${count}`);
+    lines.push(`${BOLD}Top commands (best-effort)${RESET}`);
+    for (const { cmd, count } of summary.topCommands) lines.push(`- ${cmd} ${DIM}(${count})${RESET}`);
   }
   return lines.join("\n");
 }
-
