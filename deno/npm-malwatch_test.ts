@@ -1,4 +1,5 @@
 import { ensureIgnoreScripts, scanNodeModulesForScripts } from "./preflight.ts";
+import { buildSandboxDockerRunArgs, defaultVolumeNames } from "./sandbox.ts";
 
 function assert(condition: unknown, msg = "assertion failed"): asserts condition {
   if (!condition) throw new Error(msg);
@@ -275,4 +276,71 @@ Deno.test("preflight scan counts parseErrors and supports maxPackages truncation
   assert(report.parseErrors >= 1, "expected parseErrors >= 1");
   assert(report.truncated, "expected truncated=true");
   assertEquals(report.packagesWithScripts, 1);
+});
+
+Deno.test("sandbox docker args builder includes hardening isolation defaults and mounts", () => {
+  const cwd = "/tmp/project";
+  const vols = defaultVolumeNames(cwd);
+  const args = buildSandboxDockerRunArgs({
+    cwd,
+    sandbox: {
+      image: "node:22-bookworm-slim@sha256:5373f1906319b3a1f291da5d102f4ce5c77ccbe29eb637f072b6c7b70443fc36",
+      observe: false,
+      ephemeralVolumes: true,
+      workVolume: vols.work,
+      cacheVolume: vols.cache,
+      network: "bridge",
+      memory: "2g",
+      cpus: "2",
+      pidsLimit: 512
+    },
+    command: ["pnpm", "install"],
+    runDirHostPath: "/tmp/project/.npm-malwatch/sandbox-x"
+  });
+
+  // basic docker run flags
+  assert(args.includes("--read-only"));
+  assert(args.includes("--cap-drop=ALL"));
+  assert(args.includes("no-new-privileges"));
+  assert(args.includes("--pids-limit"));
+  assert(args.includes("512"));
+  assert(args.includes("--network"));
+  assert(args.includes("bridge"));
+  // mounts
+  assert(args.includes("-v"));
+  assert(args.some((a) => a.includes(`${cwd}:/src:ro`)));
+  assert(args.some((a) => a.includes(`${vols.work}:/work`)));
+  assert(args.some((a) => a.includes(`${vols.cache}:/cache`)));
+});
+
+Deno.test("sandbox docker args builder sets observe env and mounts host log dir", () => {
+  const cwd = "/tmp/project";
+  const vols = defaultVolumeNames(cwd);
+  const args = buildSandboxDockerRunArgs({
+    cwd,
+    sandbox: {
+      image: "node:22-bookworm-slim@sha256:5373f1906319b3a1f291da5d102f4ce5c77ccbe29eb637f072b6c7b70443fc36",
+      observe: true,
+      ephemeralVolumes: true,
+      workVolume: vols.work,
+      cacheVolume: vols.cache,
+      network: "bridge",
+      memory: "2g",
+      cpus: "2",
+      pidsLimit: 512
+    },
+    command: ["pnpm", "rebuild"],
+    runDirHostPath: "/tmp/project/.npm-malwatch/sandbox-x",
+    observed: {
+      preloadHostPath: "/tmp/project/.npm-malwatch/sandbox-x/preload.cjs",
+      logHostPath: "/tmp/project/.npm-malwatch/sandbox-x/events.jsonl",
+      session: "s",
+      includePm: false,
+      hardening: "detect"
+    }
+  });
+
+  assert(args.some((a) => a.includes("/tmp/project/.npm-malwatch/sandbox-x:/opt/npm-malwatch")));
+  assert(args.some((a) => a.includes("NPM_MALWATCH_LOG=/opt/npm-malwatch/events.jsonl")));
+  assert(args.some((a) => a.includes("NODE_OPTIONS=--require /opt/npm-malwatch/preload.cjs")));
 });

@@ -25,6 +25,10 @@ This repository contains `npm-malwatch`, a CLI tool that visualizes Node.js API 
   - `deno run -A deno/npm-malwatch.ts -- npm install`
 - Preflight (scripts not executed):
   - `deno run -A deno/npm-malwatch.ts preflight -- pnpm install`
+- Sandbox (Docker isolation):
+  - `deno run -A deno/npm-malwatch.ts sandbox -- pnpm install`
+  - `deno run -A deno/npm-malwatch.ts sandbox -- pnpm rebuild`
+  - Notes: sandbox defaults to observed mode + ephemeral volumes; use `--no-observe` / `--persist-volumes` to change.
 
 ## Tests
 

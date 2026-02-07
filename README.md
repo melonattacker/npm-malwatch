@@ -12,6 +12,10 @@ deno run -A deno/npm-malwatch.ts -- node your-script.js
 
 # preflight (scripts are NOT executed)
 deno run -A deno/npm-malwatch.ts preflight -- pnpm install
+
+# sandbox (Docker isolation)
+deno run -A deno/npm-malwatch.ts sandbox -- pnpm install
+deno run -A deno/npm-malwatch.ts sandbox -- pnpm rebuild
 ```
 
 ## What it records
@@ -71,6 +75,12 @@ deno run -A deno/npm-malwatch.ts preflight -- pnpm install
 deno run -A deno/npm-malwatch.ts -- pnpm rebuild
 ```
 
+4) If you want to reduce blast radius, run installs in Docker:
+
+```bash
+deno run -A deno/npm-malwatch.ts sandbox -- pnpm install
+```
+
 ## Notes on evasion resistance (important)
 
 `npm-malwatch` injects a preload script via `NODE_OPTIONS=--require ...` so it runs very early in Node processes.
@@ -80,6 +90,16 @@ However, **100% reliable hooking is not realistic** in pure JavaScript:
 - Non-Node execution (shell scripts calling `curl`, `bash`, native binaries) is out-of-scope for JS hooks.
 - Native addons / direct syscalls can bypass JS-level APIs.
 - A process can intentionally avoid Node entirely, or spawn processes that do not inherit `NODE_OPTIONS`.
+
+## Sandbox notes (Docker)
+
+The `sandbox` subcommand runs npm/pnpm in a Docker container with a “safe-ish” profile (read-only rootfs, dropped caps, no-new-privileges, tmpfs home/tmp, resource limits).
+
+Important:
+- By default, sandbox uses **ephemeral Docker volumes** for `/work` and `/cache` and deletes them after each run.
+- By default, sandbox also enables **observed mode** and writes JSONL + prints a summary (disable with `--no-observe`).
+- Docker is **not a perfect security boundary** (kernel vulnerabilities and misconfiguration can still lead to escapes).
+- Network is allowed by default so the package manager can fetch from registries (future work: `--network none`, proxy/allowlist).
 
 ## Development
 
