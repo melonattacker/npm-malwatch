@@ -141,6 +141,8 @@ function usage(exitCode = 0): never {
     "Notes:\n" +
     "  - Observed mode requires Node.js (it injects a temporary preload .cjs via NODE_OPTIONS).\n" +
     "  - Preflight automatically appends --ignore-scripts only for install-like commands.\n" +
+    "  - Package attribution is best-effort (CommonJS module loader + AsyncLocalStorage; stack as fallback).\n" +
+    "    When attribution fails, events use pkg=<unknown> (and are still shown in package-only mode).\n" +
     "  - Sandbox uses Docker and is not a perfect security boundary.\n" +
     "  - Deno permissions: -A is easiest; minimum is --allow-run --allow-read --allow-write --allow-env.\n";
   // eslint-disable-next-line no-console

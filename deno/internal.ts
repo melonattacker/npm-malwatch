@@ -112,13 +112,6 @@ export function inferPackageFromStack(stack?: string): string {
     return classifyPackageDisplayName(pkgName);
   }
 
-  const envPkg = Deno.env.get("npm_package_name");
-  if (envPkg) return classifyPackageDisplayName(envPkg);
-
-  const initCwd = Deno.env.get("INIT_CWD");
-  const base = basename(initCwd || Deno.cwd());
-  if (base) return base;
-
   return "<unknown>";
 }
 

@@ -130,11 +130,8 @@ export function formatSummaryText(summary: Summary): string {
     }))
     .sort((a, b) => b.total - a.total);
 
-  const maxRows = 50;
-  const rows = pkgs.slice(0, maxRows);
-  const hidden = pkgs.length - rows.length;
-
-  lines.push(`${BOLD}By package (top ${rows.length})${RESET}`);
+  const rows = pkgs;
+  lines.push(`${BOLD}By package${RESET}`);
 
   const header = ["Package", "Total", "fs_r", "fs_w", "proc", "dns", "net"];
   const tableRows: string[][] = rows.map((r) => [
@@ -175,7 +172,7 @@ export function formatSummaryText(summary: Summary): string {
   for (const r of tableRows) lines.push(renderRow(r));
   lines.push(`${DIM}${sep}${RESET}`);
 
-  if (hidden > 0) lines.push(`${DIM}… and ${hidden} more packages${RESET}`);
+  // Intentionally list all packages for maximum visibility.
 
   if (summary.topHosts.length) {
     lines.push("");

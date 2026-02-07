@@ -49,7 +49,7 @@ function expectOps(events: JsonlEvent[], ops: string[]): void {
 
 async function runObservedNode(
   js: string,
-  opts?: { hardening?: "detect" | "off"; includePm?: boolean }
+  opts?: { hardening?: "detect" | "off"; includePm?: boolean; setup?: (cwd: string) => Promise<void> | void }
 ): Promise<{ logFile: string; content: string; events: JsonlEvent[] }> {
   const tmp = await Deno.makeTempDir({ prefix: "npm-malwatch-observed-" });
   const logFile = `${tmp}/out.jsonl`;
@@ -64,6 +64,8 @@ async function runObservedNode(
   const args = ["run", "-A", cli, "--log-file", logFile, "--no-summary", "--hardening", hardening];
   if (includePm) args.push("--include-pm");
   args.push("--", nodeCmd, "-e", js);
+
+  if (opts?.setup) await opts.setup(tmp);
 
   const p = new Deno.Command(Deno.execPath(), {
     args,
@@ -141,11 +143,34 @@ Deno.test("observed mode captures core ops (fs sync/async/promises/stream + proc
   // http.get and net.createConnection are best-effort; ensure at least one of each category appeared.
   assert(events.some((e) => e.op === "http.get" || e.op === "http.request"), "expected http.* op");
   assert(events.some((e) => e.op === "net.createConnection" || e.op === "net.connect"), "expected net.* op");
+});
 
-  // Attribution fallback should give a non-unknown pkg for at least one event.
-  const firstNonStartup = events.find((e) => e.op && e.op !== "startup");
-  assert(firstNonStartup?.pkg, "expected pkg field");
-  assertNotEquals(firstNonStartup.pkg, "<unknown>", "expected pkg not <unknown>");
+Deno.test("observed mode attributes node_modules package via Module._load + AsyncLocalStorage", async () => {
+  const js = [
+    "require('a');",
+    "process.exit(0);"
+  ].join("\\n");
+
+  const { events } = await runObservedNode(js, {
+    setup: async (cwd) => {
+      await Deno.mkdir(`${cwd}/node_modules/a`, { recursive: true });
+      await Deno.writeTextFile(
+        `${cwd}/node_modules/a/package.json`,
+        JSON.stringify({ name: "a", version: "1.0.0", main: "index.js" })
+      );
+      await Deno.writeTextFile(
+        `${cwd}/node_modules/a/index.js`,
+        [
+          "const fs = require('node:fs');",
+          "fs.writeFileSync('a.tmp', '1');",
+          "fs.readFileSync('a.tmp');"
+        ].join("\\n")
+      );
+    }
+  });
+
+  assert(events.some((e) => e.pkg === "a"), "expected at least one event attributed to pkg 'a'");
+  expectOps(events, ["fs.writeFileSync", "fs.readFileSync"]);
 });
 
 Deno.test("observed mode logs tamper when hooks are replaced (hardening=detect)", async () => {

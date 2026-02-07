@@ -85,6 +85,14 @@ deno run -A deno/npm-malwatch.ts sandbox -- pnpm install
 
 `npm-malwatch` injects a preload script via `NODE_OPTIONS=--require ...` so it runs very early in Node processes.
 
+## Attribution notes
+
+Package attribution (`pkg`) is best-effort:
+
+- Primary: CommonJS module loader tracking (`Module._load`) + `AsyncLocalStorage` to propagate “current package” across async boundaries.
+- Fallback: stack parsing for `.../node_modules/<pkg>/...` patterns.
+- If attribution fails, `pkg` is set to `<unknown>` (it is still included in default output).
+
 However, **100% reliable hooking is not realistic** in pure JavaScript:
 
 - Non-Node execution (shell scripts calling `curl`, `bash`, native binaries) is out-of-scope for JS hooks.

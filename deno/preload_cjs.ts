@@ -13,6 +13,8 @@ const net = require("node:net");
 const http = require("node:http");
 const https = require("node:https");
 const childProcess = require("node:child_process");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const Module = require("node:module");
 
 const SESSION = process.env.NPM_MALWATCH_SESSION || \`\${Date.now()}-\${process.pid}\`;
 const LOG_FILE = process.env.NPM_MALWATCH_LOG;
@@ -22,6 +24,8 @@ const HARDENING = process.env.NPM_MALWATCH_HARDENING || "detect";
 
 const STACK_LINES = 12;
 const STACK_CHARS = 2000;
+
+const pkgAls = new AsyncLocalStorage();
 
 function truncateString(value, maxLen) {
   if (value.length <= maxLen) return value;
@@ -86,11 +90,6 @@ function inferPackageFromStack(stack) {
     if (pkgName === "npm-malwatch") continue;
     return classifyPackageDisplayName(pkgName);
   }
-  const envPkg = process.env.npm_package_name;
-  if (envPkg) return classifyPackageDisplayName(envPkg);
-  const initCwd = process.env.INIT_CWD;
-  const base = path.basename(initCwd || process.cwd());
-  if (base) return base;
   return "<unknown>";
 }
 
@@ -151,7 +150,6 @@ function shouldEmitForPackage(pkg) {
 
 function shouldEmitEvent(pkg) {
   if (FILTER !== "package-only") return true;
-  if (pkg === "<unknown>") return false;
   if (pkg === "<malwatch>") return false;
   if (!shouldEmitForPackage(pkg)) return false;
   return true;
@@ -169,19 +167,54 @@ function logEvent(partial) {
   writeLine(JSON.stringify(evt));
 }
 
+// Track "current package" via the CommonJS module loader and propagate it across
+// async boundaries. This is best-effort and not perfect.
+const realModuleLoad = Module._load;
+const realResolveFilename = Module._resolveFilename;
+try {
+  Module._load = function (request, parent, isMain) {
+    let resolved = null;
+    try {
+      resolved = realResolveFilename(request, parent, isMain);
+    } catch {
+      return realModuleLoad.apply(this, arguments);
+    }
+
+    const pkgNameRaw = typeof resolved === "string" ? packageNameFromFilePath(resolved) : null;
+    const pkgName = pkgNameRaw ? classifyPackageDisplayName(pkgNameRaw) : null;
+
+    if (typeof pkgName === "string") {
+      return pkgAls.run(pkgName, () => realModuleLoad.apply(this, arguments));
+    }
+    return realModuleLoad.apply(this, arguments);
+  };
+} catch {}
+
 function baseArgs(args) { return { argv: redactObject(args) }; }
+
+function currentPkgAndMaybeStack() {
+  const store = pkgAls.getStore();
+  if (typeof store === "string") return { pkg: store, stack: null };
+  const stack = new Error("stack").stack;
+  return { pkg: inferPackageFromStack(stack), stack };
+}
 
 function wrapSync(category, op, original, makeArgs = (...args) => baseArgs(args)) {
   const wrapped = function (...args) {
-    const stack = new Error("stack").stack;
-    const pkg = inferPackageFromStack(stack);
+    const { pkg, stack } = currentPkgAndMaybeStack();
     const evBase = { pkg, op, category, args: makeArgs(...args) };
     try {
       const result = original.apply(this, args);
-      logEvent({ ...evBase, result: "ok", stack: shortenStack(stack) });
+      logEvent({ ...evBase, result: "ok", stack: stack ? shortenStack(stack) : void 0 });
       return result;
     } catch (e) {
-      logEvent({ ...evBase, result: "error", error: { name: safeToString(e?.name), message: truncateString(safeToString(e?.message), 500) }, stack: shortenStack(stack) });
+      const errStack = stack || new Error("stack").stack;
+      logEvent({
+        ...evBase,
+        result: "error",
+        error: { name: safeToString(e?.name), message: truncateString(safeToString(e?.message), 500) },
+        stack: shortenStack(errStack)
+      });
       throw e;
     }
   };
@@ -191,19 +224,36 @@ function wrapSync(category, op, original, makeArgs = (...args) => baseArgs(args)
 
 function wrapAsync(category, op, original, makeArgs = (...args) => baseArgs(args)) {
   const wrapped = function (...args) {
-    const stack = new Error("stack").stack;
-    const pkg = inferPackageFromStack(stack);
+    const { pkg, stack } = currentPkgAndMaybeStack();
     const evBase = { pkg, op, category, args: makeArgs(...args) };
     try {
       const result = original.apply(this, args);
       if (result && typeof result.then === "function") {
-        return result.then((v) => { logEvent({ ...evBase, result: "ok", stack: shortenStack(stack) }); return v; })
-          .catch((e) => { logEvent({ ...evBase, result: "error", error: { name: safeToString(e?.name), message: truncateString(safeToString(e?.message), 500) }, stack: shortenStack(stack) }); throw e; });
+        return result.then((v) => {
+          logEvent({ ...evBase, result: "ok", stack: stack ? shortenStack(stack) : void 0 });
+          return v;
+        })
+          .catch((e) => {
+            const errStack = stack || new Error("stack").stack;
+            logEvent({
+              ...evBase,
+              result: "error",
+              error: { name: safeToString(e?.name), message: truncateString(safeToString(e?.message), 500) },
+              stack: shortenStack(errStack)
+            });
+            throw e;
+          });
       }
-      logEvent({ ...evBase, result: "ok", stack: shortenStack(stack) });
+      logEvent({ ...evBase, result: "ok", stack: stack ? shortenStack(stack) : void 0 });
       return result;
     } catch (e) {
-      logEvent({ ...evBase, result: "error", error: { name: safeToString(e?.name), message: truncateString(safeToString(e?.message), 500) }, stack: shortenStack(stack) });
+      const errStack = stack || new Error("stack").stack;
+      logEvent({
+        ...evBase,
+        result: "error",
+        error: { name: safeToString(e?.name), message: truncateString(safeToString(e?.message), 500) },
+        stack: shortenStack(errStack)
+      });
       throw e;
     }
   };
