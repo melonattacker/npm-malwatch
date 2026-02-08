@@ -3,6 +3,7 @@ node_modules
 *.log
 coverage
 .DS_Store
+dist
 npm-malwatch-fixture.tmp
 demos/**/node_modules
 demos/**/.npm-malwatch

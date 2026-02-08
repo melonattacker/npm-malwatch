@@ -1,0 +1,122 @@
+name: Release (deno compile)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to build (e.g. v0.3.0). Normally this workflow runs on tag push."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+      ENTRY: deno/npm-malwatch.ts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@e95548e56dfa95d4e1a28d6f422fafe75c4c26fb # v2.0.3
+        with:
+          deno-version: lts
+
+      - name: Validate tag format
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "Invalid tag: $TAG"
+            exit 2
+          }
+
+      - name: Verify signed tag (GPG)
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f .github/release-signing-publickey.asc ]]; then
+            echo "Missing .github/release-signing-publickey.asc"
+            echo "Add the GPG public key used to sign release tags to that path."
+            exit 2
+          fi
+
+          gpg --batch --import .github/release-signing-publickey.asc
+          git tag -v "$TAG"
+
+      - name: Run tests
+        run: deno test -A
+
+      - name: Build binaries (deno compile)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          deno compile -A --target x86_64-unknown-linux-gnu   --output "dist/npm-malwatch-linux-x64"     "$ENTRY"
+          deno compile -A --target x86_64-apple-darwin        --output "dist/npm-malwatch-darwin-x64"    "$ENTRY"
+          deno compile -A --target aarch64-apple-darwin       --output "dist/npm-malwatch-darwin-arm64"  "$ENTRY"
+          deno compile -A --target x86_64-pc-windows-msvc     --output "dist/npm-malwatch-windows-x64.exe" "$ENTRY"
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+
+      - name: Install cosign (keyless, OIDC)
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release assets (cosign keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          for f in dist/npm-malwatch-* dist/SHA256SUMS.txt; do
+            cosign sign-blob --yes \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.crt" \
+              "$f"
+          done
+
+      - name: Generate build provenance (GitHub OIDC)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/npm-malwatch-linux-x64
+            dist/npm-malwatch-darwin-x64
+            dist/npm-malwatch-darwin-arm64
+            dist/npm-malwatch-windows-x64.exe
+            dist/SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          prerelease: ${{ contains(env.TAG, '-rc.') || contains(env.TAG, '-beta') || contains(env.TAG, '-alpha') }}
+          generate_release_notes: true
+          files: |
+            dist/npm-malwatch-linux-x64
+            dist/npm-malwatch-darwin-x64
+            dist/npm-malwatch-darwin-arm64
+            dist/npm-malwatch-windows-x64.exe
+            dist/SHA256SUMS.txt
+            dist/npm-malwatch-linux-x64.sig
+            dist/npm-malwatch-linux-x64.crt
+            dist/npm-malwatch-darwin-x64.sig
+            dist/npm-malwatch-darwin-x64.crt
+            dist/npm-malwatch-darwin-arm64.sig
+            dist/npm-malwatch-darwin-arm64.crt
+            dist/npm-malwatch-windows-x64.exe.sig
+            dist/npm-malwatch-windows-x64.exe.crt
+            dist/SHA256SUMS.txt.sig
+            dist/SHA256SUMS.txt.crt

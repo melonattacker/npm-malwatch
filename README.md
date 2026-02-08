@@ -28,16 +28,16 @@ Modern supply-chain attacks often hide in:
 
 ```bash
 # Observed (default): record Node API usage while running a command
-deno run -A deno/npm-malwatch.ts -- npm install
-deno run -A deno/npm-malwatch.ts -- pnpm install
-deno run -A deno/npm-malwatch.ts -- node your-script.js
+npm-malwatch -- npm install
+npm-malwatch -- pnpm install
+npm-malwatch -- node your-script.js
 
 # Preflight: install with --ignore-scripts, then list lifecycle scripts found in node_modules
-deno run -A deno/npm-malwatch.ts preflight -- pnpm install
+npm-malwatch preflight -- pnpm install
 
 # Sandbox (Docker): run install/rebuild in an isolated container (observed by default)
-deno run -A deno/npm-malwatch.ts sandbox -- pnpm install
-deno run -A deno/npm-malwatch.ts sandbox -- pnpm rebuild
+npm-malwatch sandbox -- pnpm install
+npm-malwatch sandbox -- pnpm rebuild
 ```
 
 ## Modes (what each subcommand actually does)
@@ -88,9 +88,47 @@ This is helpful when you want to reduce the impact of “what if a script is act
 
 ## Requirements
 
-- Deno (to run the CLI)
+- Deno (only needed if you run from source / want to `deno compile` yourself)
 - Node.js (observed mode injects a Node preload script)
 - Docker (only for `sandbox`)
+
+## Installation
+
+### Option A (recommended): download a prebuilt single binary from GitHub Releases
+
+Pick the correct asset name:
+
+- macOS Apple Silicon: `npm-malwatch-darwin-arm64`
+- macOS Intel: `npm-malwatch-darwin-x64`
+- Linux x86_64: `npm-malwatch-linux-x64`
+- Windows x86_64: `npm-malwatch-windows-x64.exe`
+
+Download with `curl` (macOS/Linux):
+
+```bash
+VERSION="vX.Y.Z"
+ARCH="npm-malwatch-darwin-arm64" # change this
+
+curl -fL -o npm-malwatch "https://github.com/melonattacker/npm-malwatch/releases/download/${VERSION}/${ARCH}"
+chmod +x npm-malwatch
+
+# put it on your PATH (example)
+mv npm-malwatch /usr/local/bin/npm-malwatch
+```
+
+Then you can run:
+
+```bash
+npm-malwatch -h
+```
+
+### Option B: run from source (developer setup)
+
+```bash
+git clone https://github.com/melonattacker/npm-malwatch
+cd npm-malwatch
+deno run -A deno/npm-malwatch.ts -- npm install
+```
 
 ## What it records
 
@@ -134,7 +172,7 @@ Each detail row includes a best-effort `Packages` column like `pacote(12), npm-r
 ### Demo 1: normal `npm install` (real packages)
 
 ```bash
-deno run -A deno/npm-malwatch.ts -- npm --prefix ./demos/demo1 install
+npm-malwatch -- npm --prefix ./demos/demo1 install
 ```
 
 ### Demo 2: “malicious-like” transitive dependency (local)
@@ -151,10 +189,10 @@ it only touches local files and `localhost` (fs_w/proc/dns/net), so you can see 
 
 ```bash
 # Preflight: list lifecycle scripts without executing them
-deno run -A deno/npm-malwatch.ts preflight -- npm --prefix ./demos/demo2 install
+npm-malwatch preflight -- npm --prefix ./demos/demo2 install
 
 # Observed: actually run scripts and see Details (top 10)
-deno run -A deno/npm-malwatch.ts -- npm --prefix ./demos/demo2 install
+npm-malwatch -- npm --prefix ./demos/demo2 install
 ```
 
 ### JSONL event fields
@@ -183,16 +221,16 @@ Implementation detail:
 ## Options
 
 ```bash
-deno run -A deno/npm-malwatch.ts --log-file /tmp/malwatch.jsonl -- pnpm install
-deno run -A deno/npm-malwatch.ts --json-summary -- node script.js
-deno run -A deno/npm-malwatch.ts --include-pm -- npm install
-deno run -A deno/npm-malwatch.ts --no-summary -- pnpm install
-deno run -A deno/npm-malwatch.ts --hardening detect -- pnpm install
-deno run -A deno/npm-malwatch.ts --summary-csv /tmp/summary.csv -- npm install
+npm-malwatch --log-file /tmp/malwatch.jsonl -- pnpm install
+npm-malwatch --json-summary -- node script.js
+npm-malwatch --include-pm -- npm install
+npm-malwatch --no-summary -- pnpm install
+npm-malwatch --hardening detect -- pnpm install
+npm-malwatch --summary-csv /tmp/summary.csv -- npm install
 
 # preflight options
-deno run -A deno/npm-malwatch.ts preflight --format text --output .npm-malwatch/preflight.json -- pnpm install
-deno run -A deno/npm-malwatch.ts preflight --format json -- pnpm install
+npm-malwatch preflight --format text --output .npm-malwatch/preflight.json -- pnpm install
+npm-malwatch preflight --format json -- pnpm install
 ```
 
 ## Recommended workflow
@@ -200,7 +238,7 @@ deno run -A deno/npm-malwatch.ts preflight --format json -- pnpm install
 1) **Preflight** (no scripts executed):
 
 ```bash
-deno run -A deno/npm-malwatch.ts preflight -- pnpm install
+npm-malwatch preflight -- pnpm install
 ```
 
 2) Review the report (what would run).
@@ -208,13 +246,13 @@ deno run -A deno/npm-malwatch.ts preflight -- pnpm install
 3) If you decide to execute scripts, run an observed rebuild (or install) to record behavior:
 
 ```bash
-deno run -A deno/npm-malwatch.ts -- pnpm rebuild
+npm-malwatch -- pnpm rebuild
 ```
 
 4) If you want to reduce blast radius, run in Docker:
 
 ```bash
-deno run -A deno/npm-malwatch.ts sandbox -- pnpm install
+npm-malwatch sandbox -- pnpm install
 ```
 
 ## Notes on evasion resistance (important)
