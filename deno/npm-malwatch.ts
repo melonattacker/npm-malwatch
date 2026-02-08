@@ -1,7 +1,13 @@
 #!/usr/bin/env -S deno run
 
 import { PRELOAD_CJS } from "./preload_cjs.ts";
-import { formatPreflightText, runPreflightInstall, scanNodeModulesForScripts, ensureIgnoreScripts } from "./preflight.ts";
+import {
+  formatPreflightCsv,
+  formatPreflightText,
+  runPreflightInstall,
+  scanNodeModulesForScripts,
+  ensureIgnoreScripts
+} from "./preflight.ts";
 import { formatSummaryCsv, formatSummaryText, summarizeJsonl } from "./summary.ts";
 import { dirname, join, resolve } from "./path.ts";
 import { computeRootByPackageFromNodeModules } from "./roots.ts";
@@ -110,6 +116,11 @@ function usage(exitCode = 0): never {
     "      Comma-separated script keys to extract.\n" +
     "      Default: preinstall,install,postinstall,prepare\n" +
     "\n" +
+    "  (output)\n" +
+    "      Preflight always writes:\n" +
+    "        - JSON report:  --output <path> (default: .npm-malwatch/preflight-<timestamp>-<pid>.json)\n" +
+    "        - CSV listing:  next to the JSON report (same name, .csv)\n" +
+    "\n" +
     "Sandbox (Docker) options:\n" +
     "  --image <name>\n" +
     "      Docker image to use.\n" +
@@ -177,6 +188,11 @@ function defaultLogFile(): string {
 
 function defaultPreflightOutput(): string {
   return join(Deno.cwd(), ".npm-malwatch", `preflight-${Date.now()}-${Deno.pid}.json`);
+}
+
+function defaultPreflightCsvOutput(jsonPath: string): string {
+  if (jsonPath.endsWith(".json")) return jsonPath.slice(0, -".json".length) + ".csv";
+  return jsonPath + ".csv";
 }
 
 function mergeNodeOptions(existing: string | undefined, preloadPath: string): string {
@@ -564,6 +580,7 @@ async function runPreflight(preflight: PreflightOpts, cmd: string[]): Promise<nu
 
   const outputPath = resolve(Deno.cwd(), preflight.output ?? defaultPreflightOutput());
   ensureDirForFile(outputPath);
+  const csvPath = defaultPreflightCsvOutput(outputPath);
 
   const { pmCommand } = ensureIgnoreScripts(cmd);
   // eslint-disable-next-line no-console
@@ -571,7 +588,10 @@ async function runPreflight(preflight: PreflightOpts, cmd: string[]): Promise<nu
   const code = await runPreflightInstall(pmCommand, Deno.cwd());
   if (code !== 0) return code;
 
-  const report = scanNodeModulesForScripts(Deno.cwd(), {
+  // Install may target a sub-project (e.g. `npm --prefix ./path install`).
+  // Scan that project’s node_modules for lifecycle scripts.
+  const projectRoot = inferProjectRootFromCommand(Deno.cwd(), pmCommand);
+  const report = scanNodeModulesForScripts(projectRoot, {
     includePm: preflight.includePm,
     maxPackages: preflight.maxPackages,
     scriptKeys: preflight.scriptKeys
@@ -579,6 +599,7 @@ async function runPreflight(preflight: PreflightOpts, cmd: string[]): Promise<nu
   report.pmCommand = pmCommand;
 
   await Deno.writeTextFile(outputPath, JSON.stringify(report, null, 2));
+  await Deno.writeTextFile(csvPath, formatPreflightCsv(report));
 
   if (preflight.format === "json") {
     // eslint-disable-next-line no-console
@@ -590,6 +611,8 @@ async function runPreflight(preflight: PreflightOpts, cmd: string[]): Promise<nu
     console.log("");
     // eslint-disable-next-line no-console
     console.log(`Report written: ${outputPath}`);
+    // eslint-disable-next-line no-console
+    console.log(`CSV written: ${csvPath}`);
   }
 
   return 0;

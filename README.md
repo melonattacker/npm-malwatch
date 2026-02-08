@@ -12,6 +12,7 @@ deno run -A deno/npm-malwatch.ts -- node your-script.js
 
 # preflight (scripts are NOT executed)
 deno run -A deno/npm-malwatch.ts preflight -- pnpm install
+deno run -A deno/npm-malwatch.ts preflight -- npm --prefix ./demos/demo install
 
 # sandbox (Docker isolation)
 deno run -A deno/npm-malwatch.ts sandbox -- pnpm install

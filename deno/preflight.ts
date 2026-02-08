@@ -199,20 +199,94 @@ export function scanNodeModulesForScripts(cwd: string, opts: PreflightOptions): 
 }
 
 export function formatPreflightText(report: PreflightReport): string {
+  const useColor = Deno.isatty(Deno.stdout.rid);
+  const BOLD = useColor ? "\x1b[1m" : "";
+  const DIM = useColor ? "\x1b[2m" : "";
+  const RESET = useColor ? "\x1b[0m" : "";
+
   const lines: string[] = [];
-  lines.push(`node_modules: ${report.nodeModulesRoot}`);
-  lines.push(`packages scanned: ${report.totalPackagesScanned}`);
-  lines.push(`packages with scripts: ${report.packagesWithScripts}`);
-  if (report.parseErrors) lines.push(`package.json parse errors: ${report.parseErrors}`);
-  if (report.truncated) lines.push("warning: truncated (max-packages reached)");
+  lines.push(`${BOLD}node_modules:${RESET} ${report.nodeModulesRoot}`);
+  lines.push(`${BOLD}packages scanned:${RESET} ${report.totalPackagesScanned}`);
+  lines.push(`${BOLD}packages with scripts:${RESET} ${report.packagesWithScripts}`);
+  if (report.parseErrors) lines.push(`${BOLD}package.json parse errors:${RESET} ${report.parseErrors}`);
+  if (report.truncated) lines.push(`${DIM}warning: truncated (max-packages reached)${RESET}`);
   lines.push("");
 
+  lines.push(`${BOLD}Scripts (preinstall/install/postinstall/prepare)${RESET}`);
+
+  const rows: string[][] = [];
   const pkgs = [...report.packages].sort((a, b) => a.name.localeCompare(b.name));
   for (const p of pkgs) {
-    lines.push(`- ${p.name}${p.version ? "@" + p.version : ""}`);
-    lines.push(`  path: ${p.path}`);
-    for (const [k, v] of Object.entries(p.scripts)) lines.push(`  ${k}: ${v}`);
+    const entries = Object.entries(p.scripts);
+    for (const [k, v] of entries) {
+      rows.push([p.name, p.version, k, v, p.path]);
+    }
   }
 
+  const header = ["Package", "Version", "Key", "Command", "Path"];
+
+  const maxPkgLen = 28;
+  const maxCmdLen = 80;
+  const maxPathLen = 44;
+  const truncate = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+  const widths = header.map((h, idx) => {
+    const col = rows.map((r) => {
+      const v = r[idx] ?? "";
+      if (idx === 0) return truncate(v, maxPkgLen);
+      if (idx === 3) return truncate(v, maxCmdLen);
+      if (idx === 4) return truncate(v, maxPathLen);
+      return v;
+    });
+    return Math.max(h.length, ...col.map((s) => s.length));
+  });
+
+  const padRight = (s: string, w: number) => (s.length >= w ? s : s + " ".repeat(w - s.length));
+  const padLeft = (s: string, w: number) => (s.length >= w ? s : " ".repeat(w - s.length) + s);
+
+  const renderRow = (cols: string[], isHeader = false): string => {
+    const rendered = cols.map((c, idx) => {
+      let cell = c ?? "";
+      if (idx === 0) cell = truncate(cell, maxPkgLen);
+      if (idx === 3) cell = truncate(cell, maxCmdLen);
+      if (idx === 4) cell = truncate(cell, maxPathLen);
+      const padded = (idx === 0 || idx === 1 || idx === 2 || idx === 3 || idx === 4) ? padRight(cell, widths[idx]!) : padLeft(cell, widths[idx]!);
+      return padded;
+    });
+    const line = `| ${rendered.join(" | ")} |`;
+    return isHeader ? `${BOLD}${line}${RESET}` : line;
+  };
+
+  const sep = `+-${widths.map((w) => "-".repeat(w)).join("-+-")}-+`;
+  lines.push(`${DIM}${sep}${RESET}`);
+  lines.push(renderRow(header, true));
+  lines.push(`${DIM}${sep}${RESET}`);
+  for (const r of rows) lines.push(renderRow(r));
+  lines.push(`${DIM}${sep}${RESET}`);
+
   return lines.join("\n");
+}
+
+function csvEscape(value: string): string {
+  if (!value) return "";
+  if (/[",\n\r]/.test(value)) return `"${value.replaceAll(`"`, `""`)}"`;
+  return value;
+}
+
+export function formatPreflightCsv(report: PreflightReport): string {
+  const rows: string[] = [];
+  rows.push(["package", "version", "key", "command", "path"].join(","));
+  const pkgs = [...report.packages].sort((a, b) => a.name.localeCompare(b.name));
+  for (const p of pkgs) {
+    for (const [k, v] of Object.entries(p.scripts)) {
+      rows.push([
+        csvEscape(p.name),
+        csvEscape(p.version),
+        csvEscape(k),
+        csvEscape(v),
+        csvEscape(p.path)
+      ].join(","));
+    }
+  }
+  return rows.join("\n") + "\n";
 }
