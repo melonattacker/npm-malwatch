@@ -8,12 +8,19 @@ type SummaryCounts = {
   net: number;
 };
 
+type TopDetailPackage = { pkg: string; count: number };
+type TopDetail = { key: string; count: number; packages: TopDetailPackage[] };
+
 export type Summary = {
   totalEvents: number;
   byPackage: Record<string, SummaryCounts>;
   rootByPackage: Record<string, string | null>;
   topHosts: Array<{ host: string; count: number }>;
   topCommands: Array<{ cmd: string; count: number }>;
+  topWritePaths: TopDetail[];
+  topProcCommands: TopDetail[];
+  topDnsHosts: TopDetail[];
+  topNetHosts: TopDetail[];
 };
 
 function emptyCounts(): SummaryCounts {
@@ -40,10 +47,27 @@ function normalizeHost(host: unknown): string | null {
   return s;
 }
 
+function hostFromHref(href: unknown): string | null {
+  const s = safeToString(href).trim();
+  if (!s) return null;
+  try {
+    const u = new URL(s);
+    return u.host || null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeCommand(cmd: unknown): string | null {
   const s = safeToString(cmd).trim();
   if (!s) return null;
   return s.length > 200 ? s.slice(0, 199) + "…" : s;
+}
+
+function incNestedMap(map: Map<string, Map<string, number>>, outerKey: string, innerKey: string): void {
+  const inner = map.get(outerKey) ?? new Map<string, number>();
+  inner.set(innerKey, (inner.get(innerKey) ?? 0) + 1);
+  map.set(outerKey, inner);
 }
 
 function incMap(map: Map<string, number>, key: string): void {
@@ -57,10 +81,34 @@ function topN(map: Map<string, number>, n: number): Array<{ key: string; count: 
     .map(([key, count]) => ({ key, count }));
 }
 
+function topNDetails(
+  counts: Map<string, number>,
+  pkgCounts: Map<string, Map<string, number>>,
+  n: number,
+  packagesTopN: number,
+): TopDetail[] {
+  const items = topN(counts, n);
+  return items.map(({ key, count }) => {
+    const inner = pkgCounts.get(key) ?? new Map<string, number>();
+    const packages = [...inner.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, packagesTopN)
+      .map(([pkg, c]) => ({ pkg, count: c }));
+    return { key, count, packages };
+  });
+}
+
 export async function summarizeJsonl(logFile: string): Promise<Summary> {
   const byPackage: Record<string, SummaryCounts> = {};
   const hosts = new Map<string, number>();
   const commands = new Map<string, number>();
+
+  const writePaths = new Map<string, number>();
+  const writePathPkgs = new Map<string, Map<string, number>>();
+  const procCommandPkgs = new Map<string, Map<string, number>>();
+  const dnsHosts = new Map<string, number>();
+  const dnsHostPkgs = new Map<string, Map<string, number>>();
+  const netHostPkgs = new Map<string, Map<string, number>>();
 
   // Avoid std imports; read whole file for now.
   const text = await Deno.readTextFile(logFile);
@@ -94,15 +142,38 @@ export async function summarizeJsonl(logFile: string): Promise<Summary> {
       counts.net++;
     }
 
-    if (category === "net") {
-      const host = normalizeHost(evt?.args?.host ?? evt?.args?.hostname);
-      if (host) incMap(hosts, host);
-    }
-    if (category === "proc") {
-      const cmd = normalizeCommand(evt?.args?.command ?? evt?.args?.file ?? evt?.args?.cmd);
-      if (cmd) incMap(commands, cmd);
+    if (category === "fs" && isFsWriteOp(op)) {
+      const p = typeof evt?.args?.path === "string" ? evt.args.path : null;
+      if (p) {
+        incMap(writePaths, p);
+        incNestedMap(writePathPkgs, p, pkg);
+      }
     }
 
+    if (category === "net") {
+      const host = normalizeHost(evt?.args?.host ?? evt?.args?.hostname) ?? hostFromHref(evt?.args?.href);
+      if (host) {
+        incMap(hosts, host);
+        incNestedMap(netHostPkgs, host, pkg);
+      }
+    }
+    if (category === "proc") {
+      const file = typeof evt?.args?.file === "string" ? evt.args.file : null;
+      const argv = Array.isArray(evt?.args?.argv) ? evt.args.argv : null;
+      const composed = file && argv && argv.length ? `${file} ${argv.map((x: unknown) => safeToString(x)).join(" ")}` : null;
+      const cmd = normalizeCommand(composed ?? evt?.args?.command ?? evt?.args?.file ?? evt?.args?.cmd);
+      if (cmd) {
+        incMap(commands, cmd);
+        incNestedMap(procCommandPkgs, cmd, pkg);
+      }
+    }
+    if (category === "dns") {
+      const host = normalizeHost(evt?.args?.host);
+      if (host) {
+        incMap(dnsHosts, host);
+        incNestedMap(dnsHostPkgs, host, pkg);
+      }
+    }
   }
 
   const rootByPackage: Record<string, string | null> = {};
@@ -113,7 +184,11 @@ export async function summarizeJsonl(logFile: string): Promise<Summary> {
     byPackage,
     rootByPackage,
     topHosts: topN(hosts, 10).map(({ key, count }) => ({ host: key, count })),
-    topCommands: topN(commands, 10).map(({ key, count }) => ({ cmd: key, count }))
+    topCommands: topN(commands, 10).map(({ key, count }) => ({ cmd: key, count })),
+    topWritePaths: topNDetails(writePaths, writePathPkgs, 10, 3),
+    topProcCommands: topNDetails(commands, procCommandPkgs, 10, 3),
+    topDnsHosts: topNDetails(dnsHosts, dnsHostPkgs, 10, 3),
+    topNetHosts: topNDetails(hosts, netHostPkgs, 10, 3)
   };
 }
 
@@ -217,24 +292,53 @@ export function formatSummaryText(summary: Summary): string {
 
   // Intentionally list all packages for maximum visibility.
 
-  if (summary.topHosts.length) {
+  const packagesCell = (pkgs: TopDetailPackage[]): string => {
+    if (!pkgs.length) return "-";
+    const s = pkgs.map((p) => `${p.pkg}(${p.count})`).join(", ");
+    return s.length > 80 ? s.slice(0, 79) + "…" : s;
+  };
+
+  const valueTrunc = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+  const renderDetailTable = (title: string, valueLabel: string, details: TopDetail[]): void => {
+    if (!details.length) return;
     lines.push("");
-    lines.push(`${BOLD}Top hosts (best-effort)${RESET}`);
-    const wHost = Math.max("Host".length, ...summary.topHosts.map((h) => h.host.length));
-    const wCount = Math.max("Count".length, ...summary.topHosts.map((h) => String(h.count).length));
-    const sep2 = `+-${"-".repeat(wHost)}-+-${"-".repeat(wCount)}-+`;
+    lines.push(`${BOLD}${title}${RESET}`);
+    const header2 = [valueLabel, "Count", "Packages"];
+    const rows2 = details.map((d) => [d.key, String(d.count), packagesCell(d.packages)]);
+    const widths2 = header2.map((h, idx) => {
+      const col = [
+        h,
+        ...rows2.map((r) => idx === 0 ? valueTrunc(r[idx]!, 60) : idx === 2 ? valueTrunc(r[idx]!, 80) : r[idx]!),
+      ];
+      return Math.max(...col.map((s) => s.length));
+    });
+    const sep2 = `+-${widths2.map((w) => "-".repeat(w)).join("-+-")}-+`;
+    const padR = (s: string, w: number) => (s.length >= w ? s : s + " ".repeat(w - s.length));
+    const padL = (s: string, w: number) => (s.length >= w ? s : " ".repeat(w - s.length) + s);
+    const render = (cols: string[], isHeader = false) => {
+      const rendered = cols.map((c, idx) => {
+        const cell = idx === 0 ? valueTrunc(c, 60) : idx === 2 ? valueTrunc(c, 80) : c;
+        const padded = idx === 1 ? padL(cell, widths2[idx]!) : padR(cell, widths2[idx]!);
+        return padded;
+      });
+      const line = `| ${rendered.join(" | ")} |`;
+      return isHeader ? `${BOLD}${line}${RESET}` : line;
+    };
+
     lines.push(`${DIM}${sep2}${RESET}`);
-    lines.push(`${BOLD}| ${"Host".padEnd(wHost)} | ${"Count".padStart(wCount)} |${RESET}`);
+    lines.push(render(header2, true));
     lines.push(`${DIM}${sep2}${RESET}`);
-    for (const { host, count } of summary.topHosts) {
-      lines.push(`| ${host.padEnd(wHost)} | ${String(count).padStart(wCount)} |`);
-    }
+    for (const r of rows2) lines.push(render(r));
     lines.push(`${DIM}${sep2}${RESET}`);
-  }
-  if (summary.topCommands.length) {
-    lines.push("");
-    lines.push(`${BOLD}Top commands (best-effort)${RESET}`);
-    for (const { cmd, count } of summary.topCommands) lines.push(`- ${cmd} ${DIM}(${count})${RESET}`);
-  }
+  };
+
+  lines.push("");
+  lines.push(`${BOLD}Details (top 10)${RESET}`);
+  renderDetailTable("Top file writes", "Path", summary.topWritePaths);
+  renderDetailTable("Top spawned commands", "Command", summary.topProcCommands);
+  renderDetailTable("Top DNS lookups", "Host", summary.topDnsHosts);
+  renderDetailTable("Top network hosts", "Host", summary.topNetHosts);
+
   return lines.join("\n");
 }

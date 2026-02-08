@@ -35,6 +35,15 @@ Each call is appended as one JSON object per line (JSONL).
 - Summary CSV file (default: next to the JSONL log, `*.summary.csv`)
   - Columns: `root,package,total,fs_read,fs_write,proc,dns,net`
 
+The CLI summary also includes a **Details (top 10)** section for suspicious categories:
+
+- `fs_w`: top file write paths (from `args.path`)
+- `proc`: top spawned commands (from `args.file/args.argv` or `args.command`)
+- `dns`: top DNS lookup hosts (from `args.host`)
+- `net`: top network hosts (from `args.host/args.hostname` or best-effort `args.href`)
+
+Each detail row includes a best-effort `Packages` column like `pacote(12), npm-registry-fetch(3)`.
+
 ### JSONL event fields
 
 - `ts`: epoch millis
