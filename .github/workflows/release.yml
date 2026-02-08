@@ -40,17 +40,30 @@ jobs:
             exit 2
           }
 
-      - name: Verify signed tag (GPG)
+      - name: Verify signed tag (SSH)
         run: |
           set -euo pipefail
 
           if [[ ! -f .github/release-signing-publickey.asc ]]; then
             echo "Missing .github/release-signing-publickey.asc"
-            echo "Add the GPG public key used to sign release tags to that path."
+            echo "Add the SSH public key(s) used to sign release tags to that path."
             exit 2
           fi
 
-          gpg --batch --import .github/release-signing-publickey.asc
+          # Git can verify SSH-signed tags when configured with an allowed signers file.
+          # The allowed signers format is:
+          #   <principal-pattern> <keytype> <base64-key>
+          # We accept either:
+          #   - raw public keys (e.g. "ssh-ed25519 AAAA...") -> principal pattern "*"
+          #   - full allowed signers lines (e.g. "* ssh-ed25519 AAAA...")
+          awk '
+            /^[[:space:]]*($|#)/ { next }
+            $1 ~ /^ssh-|^ecdsa-/ { print "* " $0; next }
+            { print $0 }
+          ' .github/release-signing-publickey.asc > /tmp/npm-malwatch.allowed_signers
+
+          git config gpg.format ssh
+          git config gpg.ssh.allowedSignersFile /tmp/npm-malwatch.allowed_signers
           git tag -v "$TAG"
 
       - name: Run tests
