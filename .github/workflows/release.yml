@@ -14,6 +14,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -84,7 +85,7 @@ jobs:
           (cd dist && sha256sum * > SHA256SUMS.txt)
 
       - name: Install cosign (keyless, OIDC)
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
 
       - name: Sign release assets (cosign keyless)
         env:
@@ -101,7 +102,7 @@ jobs:
           done
 
       - name: Generate build provenance (GitHub OIDC)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
           subject-path: |
             dist/npm-malwatch-linux-x64
