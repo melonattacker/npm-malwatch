@@ -6,18 +6,11 @@
   "license": "UNLICENSED",
   "dependencies": {
     "axios": "^1.7.9",
-    "debug": "^4.3.7",
-    "lodash": "^4.17.21",
-    "minimist": "^1.2.8",
-    "picocolors": "^1.1.0",
-    "yaml": "^2.6.1",
-    "zod": "^3.24.1",
-    "sigstore": "*"
-  },
-  "optionalDependencies": {
-    "bcrypt": "^5.1.1"
+    "yaml": "^2.8.2",
+    "zod": "^4.3.6",
+    "sigstore": "^4.1.0"
   },
   "devDependencies": {
-    "eslint": "^9.17.0"
+    "eslint": "^10.0.0"
   }
 }
