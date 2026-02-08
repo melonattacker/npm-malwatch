@@ -2,8 +2,9 @@
 
 import { PRELOAD_CJS } from "./preload_cjs.ts";
 import { formatPreflightText, runPreflightInstall, scanNodeModulesForScripts, ensureIgnoreScripts } from "./preflight.ts";
-import { formatSummaryText, summarizeJsonl } from "./summary.ts";
+import { formatSummaryCsv, formatSummaryText, summarizeJsonl } from "./summary.ts";
 import { dirname, join, resolve } from "./path.ts";
+import { computeRootByPackageFromNodeModules } from "./roots.ts";
 import {
   buildSandboxDockerRunArgs,
   defaultRunDir,
@@ -17,6 +18,8 @@ type GlobalOpts = {
   jsonSummary: boolean;
   includePm: boolean;
   summary: boolean;
+  summaryCsv: boolean;
+  summaryCsvFile?: string;
   hardening: "detect" | "off";
 };
 
@@ -76,6 +79,13 @@ function usage(exitCode = 0): never {
     "\n" +
     "  --no-summary\n" +
     "      Do not print the end-of-run summary (log only).\n" +
+    "\n" +
+    "  --summary-csv <path>\n" +
+    "      Write the package summary table as CSV.\n" +
+    "      Default: enabled (auto path next to the JSONL log).\n" +
+    "\n" +
+    "  --no-summary-csv\n" +
+    "      Disable writing the summary CSV file.\n" +
     "\n" +
     "  --hardening <detect|off>\n" +
     "      detect: log a \"tamper\" event if hooks look replaced at runtime.\n" +
@@ -143,6 +153,7 @@ function usage(exitCode = 0): never {
     "  - Preflight automatically appends --ignore-scripts only for install-like commands.\n" +
     "  - Package attribution is best-effort (CommonJS module loader + AsyncLocalStorage; stack as fallback).\n" +
     "    When attribution fails, events use pkg=<unknown> (and are still shown in package-only mode).\n" +
+    "    The summary table also shows a best-effort direct dependency root (one level above your project).\n" +
     "  - Sandbox uses Docker and is not a perfect security boundary.\n" +
     "  - Deno permissions: -A is easiest; minimum is --allow-run --allow-read --allow-write --allow-env.\n";
   // eslint-disable-next-line no-console
@@ -176,6 +187,191 @@ function mergeNodeOptions(existing: string | undefined, preloadPath: string): st
   return `${base} ${req}`;
 }
 
+async function writeSummaryCsv(summary: unknown, csvPath: string): Promise<void> {
+  ensureDirForFile(csvPath);
+  await Deno.writeTextFile(csvPath, formatSummaryCsv(summary as any));
+  // eslint-disable-next-line no-console
+  console.error(`npm-malwatch: wrote summary csv to ${csvPath}`);
+}
+
+function defaultSummaryCsvPath(logFile: string): string {
+  if (logFile.endsWith(".jsonl")) return logFile.slice(0, -".jsonl".length) + ".summary.csv";
+  return logFile + ".summary.csv";
+}
+
+function inferProjectRootFromCommand(cwd: string, cmd: string[]): string {
+  // Best-effort: support npm "--prefix" and pnpm "-C"/"--dir".
+  const takeNext = (flag: string): string | null => {
+    const idx = cmd.indexOf(flag);
+    if (idx === -1) return null;
+    const v = cmd[idx + 1];
+    if (!v || v.startsWith("-")) return null;
+    return v;
+  };
+
+  const prefix = takeNext("--prefix") ?? takeNext("-C") ?? takeNext("--dir");
+  if (!prefix) return cwd;
+  return resolve(cwd, prefix);
+}
+
+function normalizePosixRel(p: string): string {
+  // For container paths. Keep it simple.
+  let out = p.replaceAll("\\", "/");
+  if (out.startsWith("./")) out = out.slice(2);
+  while (out.startsWith("/")) out = out.slice(1);
+  return out;
+}
+
+async function computeRootsInSandbox(
+  image: string,
+  workVolume: string,
+  projectRel: string,
+  outDirHost: string,
+  pkgs: string[],
+): Promise<Record<string, string | null>> {
+  const outPathHost = join(outDirHost, "roots.json");
+  const projectRoot = projectRel ? `/work/${normalizePosixRel(projectRel)}` : "/work";
+
+  const js = `
+const fs = require("node:fs");
+const path = require("node:path");
+
+function safeReadJson(p) { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; } }
+function listNpmStyle(nm, out, max) {
+  let entries = [];
+  try { entries = fs.readdirSync(nm, { withFileTypes: true }); } catch { return; }
+  entries.sort((a,b)=>a.name.localeCompare(b.name));
+  for (const e of entries) {
+    if (out.length >= max) break;
+    if (!e.isDirectory()) continue;
+    if (e.name === ".bin" || e.name === ".pnpm") continue;
+    const full = path.join(nm, e.name);
+    if (e.name.startsWith("@")) {
+      let scoped = [];
+      try { scoped = fs.readdirSync(full, { withFileTypes: true }); } catch { scoped = []; }
+      scoped.sort((a,b)=>a.name.localeCompare(b.name));
+      for (const se of scoped) {
+        if (out.length >= max) break;
+        if (!se.isDirectory()) continue;
+        out.push(path.join(full, se.name, "package.json"));
+      }
+    } else {
+      out.push(path.join(full, "package.json"));
+    }
+  }
+}
+function listPnpmStyle(nm, out, max) {
+  const pnpmRoot = path.join(nm, ".pnpm");
+  let store = [];
+  try { store = fs.readdirSync(pnpmRoot, { withFileTypes: true }); } catch { return; }
+  store.sort((a,b)=>a.name.localeCompare(b.name));
+  for (const e of store) {
+    if (out.length >= max) break;
+    if (!e.isDirectory()) continue;
+    listNpmStyle(path.join(pnpmRoot, e.name, "node_modules"), out, max);
+  }
+}
+
+const projectRoot = ${JSON.stringify(projectRoot)};
+const pkgJson = safeReadJson(path.join(projectRoot, "package.json")) || {};
+const direct = new Set();
+for (const k of ["dependencies","devDependencies","optionalDependencies","peerDependencies"]) {
+  const obj = pkgJson[k];
+  if (!obj || typeof obj !== "object") continue;
+  for (const name of Object.keys(obj)) direct.add(name);
+}
+
+const nmRoot = path.join(projectRoot, "node_modules");
+const paths = [];
+listNpmStyle(nmRoot, paths, 50001);
+if (paths.length < 50001) listPnpmStyle(nmRoot, paths, 50001);
+
+function depsFrom(json) {
+  const out = new Set();
+  for (const k of ["dependencies","optionalDependencies","peerDependencies"]) {
+    const obj = json && json[k];
+    if (!obj || typeof obj !== "object") continue;
+    for (const name of Object.keys(obj)) out.add(name);
+  }
+  return [...out];
+}
+
+const graph = new Map();
+for (const p of paths.slice(0, 50000)) {
+  const json = safeReadJson(p);
+  if (!json) continue;
+  const name = typeof json.name === "string" ? json.name : path.basename(path.dirname(p));
+  const deps = depsFrom(json);
+  const set = graph.get(name) || new Set();
+  for (const d of deps) set.add(d);
+  graph.set(name, set);
+}
+
+const targets = new Set(JSON.parse(process.env.NPM_MALWATCH_TARGET_PKGS || "[]"));
+const rootsFor = new Map();
+const q = [];
+for (const r of [...direct]) q.push([r,r]);
+const seen = new Set();
+while (q.length) {
+  const [pkg, root] = q.shift();
+  const key = root + "\\0" + pkg;
+  if (seen.has(key)) continue;
+  seen.add(key);
+  const set = rootsFor.get(pkg) || new Set();
+  set.add(root);
+  rootsFor.set(pkg, set);
+  const children = graph.get(pkg);
+  if (!children) continue;
+  for (const c of children) q.push([c, root]);
+}
+
+const out = {};
+for (const p of targets) {
+  if (typeof p !== "string" || p.startsWith("<")) { out[p] = null; continue; }
+  const rs = rootsFor.get(p);
+  if (!rs || rs.size === 0) out[p] = null;
+  else out[p] = [...rs].sort().join("|");
+}
+for (const r of direct) {
+  if (targets.has(r) && !out[r]) out[r] = r;
+}
+
+fs.writeFileSync("/out/roots.json", JSON.stringify(out, null, 2));
+`;
+
+  const dockerArgs = [
+    "run",
+    "--rm",
+    "-v",
+    `${workVolume}:/work`,
+    "-v",
+    `${outDirHost}:/out`,
+    "-e",
+    `NPM_MALWATCH_TARGET_PKGS=${JSON.stringify(pkgs)}`,
+    image,
+    "node",
+    "-e",
+    js
+  ];
+
+  const child = new Deno.Command("docker", {
+    args: dockerArgs,
+    stdin: "null",
+    stdout: "inherit",
+    stderr: "inherit",
+    env: { ...Deno.env.toObject() }
+  }).spawn();
+  const st = await child.status;
+  if (!st.success) return {};
+
+  try {
+    const raw = await Deno.readTextFile(outPathHost);
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
 function parseFlags(argv: string[]): {
   subcommand: null | "preflight" | "sandbox";
   global: GlobalOpts;
@@ -188,6 +384,8 @@ function parseFlags(argv: string[]): {
     jsonSummary: false,
     includePm: false,
     summary: true,
+    summaryCsv: true,
+    summaryCsvFile: undefined,
     hardening: "detect"
   };
 
@@ -230,6 +428,11 @@ function parseFlags(argv: string[]): {
       global.includePm = true;
       preflight.includePm = true;
     } else if (a === "--no-summary") global.summary = false;
+    else if (a === "--summary-csv") {
+      global.summaryCsv = true;
+      global.summaryCsvFile = optPart[++i];
+      if (!global.summaryCsvFile) die("Missing value for --summary-csv <path>");
+    } else if (a === "--no-summary-csv") global.summaryCsv = false;
     else if (a === "--hardening") {
       const v = optPart[++i] ?? "detect";
       global.hardening = v === "off" ? "off" : "detect";
@@ -329,6 +532,8 @@ async function runObserved(global: GlobalOpts, cmd: string[]): Promise<number> {
   if (global.summary) {
     try {
       const summary = await summarizeJsonl(logFile);
+      const projectRoot = inferProjectRootFromCommand(Deno.cwd(), cmd);
+      summary.rootByPackage = computeRootByPackageFromNodeModules(projectRoot, Object.keys(summary.byPackage));
       if (global.jsonSummary) {
         // eslint-disable-next-line no-console
         console.log(JSON.stringify(summary, null, 2));
@@ -339,6 +544,11 @@ async function runObserved(global: GlobalOpts, cmd: string[]): Promise<number> {
         console.log("npm-malwatch summary");
         // eslint-disable-next-line no-console
         console.log(formatSummaryText(summary));
+      }
+
+      if (global.summaryCsv) {
+        const csvPath = resolve(Deno.cwd(), global.summaryCsvFile ?? defaultSummaryCsvPath(logFile));
+        await writeSummaryCsv(summary, csvPath);
       }
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -449,6 +659,18 @@ async function runSandbox(sandbox: SandboxOpts, global: GlobalOpts, cmd: string[
   if (sandbox.observe && observed && global.summary) {
     try {
       const summary = await summarizeJsonl(observed.logHostPath);
+      // Try to attribute each package to a direct dependency root. In sandbox mode,
+      // node_modules lives inside the Docker work volume, so we compute this via
+      // an extra docker run before volumes are deleted.
+      const projectRootHost = inferProjectRootFromCommand(cwd, cmd);
+      summary.rootByPackage = computeRootByPackageFromNodeModules(projectRootHost, Object.keys(summary.byPackage));
+      const hasAnyRoots = Object.values(summary.rootByPackage).some((v) => typeof v === "string" && v.length > 0);
+      if (!hasAnyRoots) {
+        const projectRel = cmd.includes("--prefix") ? (cmd[cmd.indexOf("--prefix") + 1] ?? "") : "";
+        const outDirHost = dirname(observed.logHostPath);
+        const roots = await computeRootsInSandbox(sandbox.image, sandbox.workVolume, projectRel, outDirHost, Object.keys(summary.byPackage));
+        for (const [k, v] of Object.entries(roots)) summary.rootByPackage[k] = v;
+      }
       if (global.jsonSummary) {
         // eslint-disable-next-line no-console
         console.log(JSON.stringify(summary, null, 2));
@@ -459,6 +681,12 @@ async function runSandbox(sandbox: SandboxOpts, global: GlobalOpts, cmd: string[
         console.log("npm-malwatch summary");
         // eslint-disable-next-line no-console
         console.log(formatSummaryText(summary));
+      }
+
+      if (global.summaryCsv) {
+        const defaultPath = join(dirname(observed.logHostPath), "summary.csv");
+        const csvPath = resolve(cwd, global.summaryCsvFile ?? defaultPath);
+        await writeSummaryCsv(summary, csvPath);
       }
     } catch (e) {
       // eslint-disable-next-line no-console

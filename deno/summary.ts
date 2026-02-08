@@ -11,6 +11,7 @@ type SummaryCounts = {
 export type Summary = {
   totalEvents: number;
   byPackage: Record<string, SummaryCounts>;
+  rootByPackage: Record<string, string | null>;
   topHosts: Array<{ host: string; count: number }>;
   topCommands: Array<{ cmd: string; count: number }>;
 };
@@ -80,7 +81,6 @@ export async function summarizeJsonl(logFile: string): Promise<Summary> {
     const pkg = typeof evt.pkg === "string" ? evt.pkg : "<unknown>";
     const op = typeof evt.op === "string" ? evt.op : "";
     const category = typeof evt.category === "string" ? evt.category : "";
-
     const counts = (byPackage[pkg] ??= emptyCounts());
     if (category === "fs") {
       if (isFsReadOp(op)) counts.fs_read++;
@@ -102,14 +102,54 @@ export async function summarizeJsonl(logFile: string): Promise<Summary> {
       const cmd = normalizeCommand(evt?.args?.command ?? evt?.args?.file ?? evt?.args?.cmd);
       if (cmd) incMap(commands, cmd);
     }
+
   }
+
+  const rootByPackage: Record<string, string | null> = {};
+  for (const pkg of Object.keys(byPackage)) rootByPackage[pkg] = null;
 
   return {
     totalEvents,
     byPackage,
+    rootByPackage,
     topHosts: topN(hosts, 10).map(({ key, count }) => ({ host: key, count })),
     topCommands: topN(commands, 10).map(({ key, count }) => ({ cmd: key, count }))
   };
+}
+
+function csvEscape(value: string): string {
+  if (!value) return "";
+  if (/[",\n\r]/.test(value)) return `"${value.replaceAll(`"`, `""`)}"`;
+  return value;
+}
+
+export function formatSummaryCsv(summary: Summary): string {
+  const header = ["root", "package", "total", "fs_read", "fs_write", "proc", "dns", "net"];
+  const rows: string[] = [];
+  rows.push(header.join(","));
+
+  const pkgs = Object.entries(summary.byPackage)
+    .map(([pkg, c]) => ({
+      pkg,
+      ...c,
+      total: c.fs_read + c.fs_write + c.proc + c.dns + c.net
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  for (const r of pkgs) {
+    rows.push([
+      csvEscape(summary.rootByPackage[r.pkg] ?? ""),
+      csvEscape(r.pkg),
+      String(r.total),
+      String(r.fs_read),
+      String(r.fs_write),
+      String(r.proc),
+      String(r.dns),
+      String(r.net)
+    ].join(","));
+  }
+
+  return rows.join("\n") + "\n";
 }
 
 export function formatSummaryText(summary: Summary): string {
@@ -133,8 +173,9 @@ export function formatSummaryText(summary: Summary): string {
   const rows = pkgs;
   lines.push(`${BOLD}By package${RESET}`);
 
-  const header = ["Package", "Total", "fs_r", "fs_w", "proc", "dns", "net"];
+  const header = ["Root", "Package", "Total", "fs_r", "fs_w", "proc", "dns", "net"];
   const tableRows: string[][] = rows.map((r) => [
+    summary.rootByPackage[r.pkg] ?? "-",
     r.pkg,
     String(r.total),
     String(r.fs_read),
@@ -144,11 +185,13 @@ export function formatSummaryText(summary: Summary): string {
     String(r.net)
   ]);
 
-  const maxPkgLen = 44;
-  const truncatePkg = (s: string): string => (s.length > maxPkgLen ? s.slice(0, maxPkgLen - 1) + "…" : s);
+  const maxPkgLen = 36;
+  const truncateCell = (s: string): string => (s.length > maxPkgLen ? s.slice(0, maxPkgLen - 1) + "…" : s);
 
   const widths = header.map((h, idx) => {
-    const col = idx === 0 ? [h, ...tableRows.map((r) => truncatePkg(r[idx]!))] : [h, ...tableRows.map((r) => r[idx]!)];
+    const col = (idx === 0 || idx === 1)
+      ? [h, ...tableRows.map((r) => truncateCell(r[idx]!))]
+      : [h, ...tableRows.map((r) => r[idx]!)];
     return Math.max(...col.map((s) => s.length));
   });
 
@@ -157,8 +200,8 @@ export function formatSummaryText(summary: Summary): string {
 
   const renderRow = (cols: string[], isHeader = false): string => {
     const rendered = cols.map((c, idx) => {
-      const cell = idx === 0 ? truncatePkg(c) : c;
-      const padded = idx === 0 ? padRight(cell, widths[idx]!) : padLeft(cell, widths[idx]!);
+      const cell = (idx === 0 || idx === 1) ? truncateCell(c) : c;
+      const padded = (idx === 0 || idx === 1) ? padRight(cell, widths[idx]!) : padLeft(cell, widths[idx]!);
       return padded;
     });
     const line = `| ${rendered.join(" | ")} |`;

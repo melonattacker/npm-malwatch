@@ -13,6 +13,11 @@ function assertNotEquals(a: unknown, b: unknown, msg = "assertNotEquals failed")
   if (a === b) throw new Error(`${msg}: both were ${String(a)}`);
 }
 
+function dirOfPosix(p: string): string {
+  const idx = p.lastIndexOf("/");
+  return idx === -1 ? "." : p.slice(0, idx);
+}
+
 function repoRootFromImportMeta(): string {
   // deno/npm-malwatch_test.ts -> deno/ -> repo root
   const u = new URL("..", import.meta.url);
@@ -49,7 +54,13 @@ function expectOps(events: JsonlEvent[], ops: string[]): void {
 
 async function runObservedNode(
   js: string,
-  opts?: { hardening?: "detect" | "off"; includePm?: boolean; setup?: (cwd: string) => Promise<void> | void }
+  opts?: {
+    hardening?: "detect" | "off";
+    includePm?: boolean;
+    summary?: boolean;
+    summaryCsvFile?: string;
+    setup?: (cwd: string) => Promise<void> | void;
+  }
 ): Promise<{ logFile: string; content: string; events: JsonlEvent[] }> {
   const tmp = await Deno.makeTempDir({ prefix: "npm-malwatch-observed-" });
   const logFile = `${tmp}/out.jsonl`;
@@ -61,7 +72,10 @@ async function runObservedNode(
   const hardening = opts?.hardening ?? "detect";
   const includePm = opts?.includePm ?? false;
 
-  const args = ["run", "-A", cli, "--log-file", logFile, "--no-summary", "--hardening", hardening];
+  const args = ["run", "-A", cli, "--log-file", logFile, "--hardening", hardening];
+  const enableSummary = opts?.summary ?? false;
+  if (!enableSummary) args.push("--no-summary");
+  if (opts?.summaryCsvFile) args.push("--summary-csv", `${tmp}/${opts.summaryCsvFile}`);
   if (includePm) args.push("--include-pm");
   args.push("--", nodeCmd, "-e", js);
 
@@ -149,7 +163,7 @@ Deno.test("observed mode attributes node_modules package via Module._load + Asyn
   const js = [
     "require('a');",
     "process.exit(0);"
-  ].join("\\n");
+  ].join("\n");
 
   const { events } = await runObservedNode(js, {
     setup: async (cwd) => {
@@ -164,13 +178,59 @@ Deno.test("observed mode attributes node_modules package via Module._load + Asyn
           "const fs = require('node:fs');",
           "fs.writeFileSync('a.tmp', '1');",
           "fs.readFileSync('a.tmp');"
-        ].join("\\n")
+        ].join("\n")
       );
     }
   });
 
   assert(events.some((e) => e.pkg === "a"), "expected at least one event attributed to pkg 'a'");
   expectOps(events, ["fs.writeFileSync", "fs.readFileSync"]);
+});
+
+Deno.test("observed mode writes summary CSV", async () => {
+  const js = [
+    "const fs = require('node:fs');",
+    "fs.writeFileSync('x.tmp','1');",
+    "fs.readFileSync('x.tmp');",
+    "process.exit(0);"
+  ].join("\n");
+
+  const { logFile } = await runObservedNode(js, { summary: true, summaryCsvFile: "summary.csv" });
+  const csvPath = `${dirOfPosix(logFile)}/summary.csv`;
+  const csv = await Deno.readTextFile(csvPath);
+  assert(csv.startsWith("root,package,total,fs_read,fs_write,proc,dns,net\n"), "expected CSV header");
+  assert(csv.includes(",<unknown>,"), "expected <unknown> row in CSV");
+});
+
+Deno.test("summary CSV includes direct root dependency when project package.json exists", async () => {
+  const js = [
+    "require('a');",
+    "process.exit(0);"
+  ].join("\n");
+
+  const { logFile } = await runObservedNode(js, {
+    summary: true,
+    summaryCsvFile: "summary.csv",
+    setup: async (cwd) => {
+      await Deno.writeTextFile(
+        `${cwd}/package.json`,
+        JSON.stringify({ name: "t", version: "0.0.0", dependencies: { a: "1.0.0" } }),
+      );
+      await Deno.mkdir(`${cwd}/node_modules/a`, { recursive: true });
+      await Deno.writeTextFile(
+        `${cwd}/node_modules/a/package.json`,
+        JSON.stringify({ name: "a", version: "1.0.0", main: "index.js" })
+      );
+      await Deno.writeTextFile(
+        `${cwd}/node_modules/a/index.js`,
+        "const fs = require('node:fs'); fs.writeFileSync('a.tmp','1');"
+      );
+    }
+  });
+
+  const csvPath = `${dirOfPosix(logFile)}/summary.csv`;
+  const csv = await Deno.readTextFile(csvPath);
+  assert(csv.includes("a,a,"), "expected root=a for pkg a");
 });
 
 Deno.test("observed mode logs tamper when hooks are replaced (hardening=detect)", async () => {

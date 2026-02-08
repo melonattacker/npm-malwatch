@@ -31,6 +31,8 @@ Each call is appended as one JSON object per line (JSONL).
 
 - JSONL log file (default: `.npm-malwatch/<timestamp>-<pid>.jsonl`)
 - End-of-run summary (by package)
+- Summary CSV file (default: next to the JSONL log, `*.summary.csv`)
+  - Columns: `root,package,total,fs_read,fs_write,proc,dns,net`
 
 ### JSONL event fields
 
