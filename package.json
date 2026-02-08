@@ -1,6 +1,6 @@
 {
   "name": "npm-malwatch",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Visualize potentially dangerous Node.js API usage during npm/pnpm installs.",
   "license": "Apache-2.0",
   "type": "commonjs",
