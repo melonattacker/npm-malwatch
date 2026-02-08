@@ -230,6 +230,47 @@ function inferProjectRootFromCommand(cwd: string, cmd: string[]): string {
   return resolve(cwd, prefix);
 }
 
+function inferNodeModulesScanRootFromCommand(cwd: string, cmd: string[]): string {
+  const candidates: string[] = [];
+  candidates.push(inferProjectRootFromCommand(cwd, cmd));
+
+  for (const token of cmd) {
+    if (!token || token.startsWith("-")) continue;
+    const abs = resolve(cwd, token);
+    try {
+      const st = Deno.statSync(abs);
+      if (!st.isDirectory) continue;
+    } catch {
+      continue;
+    }
+    try {
+      if (!Deno.statSync(join(abs, "package.json")).isFile) continue;
+    } catch {
+      continue;
+    }
+    candidates.push(abs);
+  }
+
+  candidates.push(cwd);
+
+  const seen = new Set<string>();
+  const uniq = candidates.filter((c) => {
+    if (seen.has(c)) return false;
+    seen.add(c);
+    return true;
+  });
+
+  for (const c of uniq) {
+    try {
+      if (Deno.statSync(join(c, "node_modules")).isDirectory) return c;
+    } catch {
+      // continue
+    }
+  }
+
+  return uniq[0] ?? cwd;
+}
+
 function normalizePosixRel(p: string): string {
   // For container paths. Keep it simple.
   let out = p.replaceAll("\\", "/");
@@ -590,7 +631,7 @@ async function runPreflight(preflight: PreflightOpts, cmd: string[]): Promise<nu
 
   // Install may target a sub-project (e.g. `npm --prefix ./path install`).
   // Scan that project’s node_modules for lifecycle scripts.
-  const projectRoot = inferProjectRootFromCommand(Deno.cwd(), pmCommand);
+  const projectRoot = inferNodeModulesScanRootFromCommand(Deno.cwd(), pmCommand);
   const report = scanNodeModulesForScripts(projectRoot, {
     includePm: preflight.includePm,
     maxPackages: preflight.maxPackages,

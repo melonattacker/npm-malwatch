@@ -1,0 +1,10 @@
+{
+  "name": "demo2-evil",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A local demo package that simulates suspicious install-time behaviors (safe, localhost-only).",
+  "license": "UNLICENSED",
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  }
+}

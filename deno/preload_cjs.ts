@@ -27,6 +27,12 @@ const STACK_CHARS = 2000;
 
 const pkgAls = new AsyncLocalStorage();
 
+// Best-effort: if the Node process is executing a package script directly
+// (e.g. "node postinstall.js" with cwd set to the package), Module._load based
+// tracking may not always cover early calls. In that case, fall back to the
+// main script path.
+let MAIN_PKG = null;
+
 function truncateString(value, maxLen) {
   if (value.length <= maxLen) return value;
   return value.slice(0, Math.max(0, maxLen - 1)) + "…";
@@ -63,6 +69,48 @@ function packageNameFromFilePath(filePath) {
     return \`\${parts[0]}/\${parts[1]}\`;
   }
   return parts[0] ?? null;
+}
+
+// Some packages (e.g. local file: dependencies) may execute scripts from a
+// path outside of node_modules. In those cases we fall back to reading the
+// nearest package.json up the directory tree (best-effort, cached).
+const dirToNearestPkgName = new Map();
+function nearestPackageNameFromDir(startDir) {
+  const visited = [];
+  let dir = startDir;
+  for (let i = 0; i < 12; i++) {
+    if (!dir || dir === "/") break;
+    const cached = dirToNearestPkgName.get(dir);
+    if (typeof cached === "string" || cached === null) {
+      for (const v of visited) dirToNearestPkgName.set(v, cached);
+      return cached;
+    }
+
+    visited.push(dir);
+    const pj = path.join(dir, "package.json");
+    try {
+      const raw = realFs.readFileSync(pj, "utf8");
+      const data = JSON.parse(raw);
+      const name = typeof data?.name === "string" ? data.name : null;
+      const out = name ? classifyPackageDisplayName(name) : null;
+      for (const v of visited) dirToNearestPkgName.set(v, out);
+      return out;
+    } catch {
+      // continue upward
+    }
+    const parent = path.dirname(dir);
+    if (!parent || parent === dir) break;
+    dir = parent;
+  }
+  for (const v of visited) dirToNearestPkgName.set(v, null);
+  return null;
+}
+
+function packageNameFromResolvedFilename(resolvedFilename) {
+  const fromNodeModules = packageNameFromFilePath(resolvedFilename);
+  if (fromNodeModules) return classifyPackageDisplayName(fromNodeModules);
+  const dir = path.dirname(resolvedFilename);
+  return nearestPackageNameFromDir(dir);
 }
 
 function isPmPackageName(pkgName) {
@@ -130,6 +178,15 @@ const realDns = { ...dns };
 const realNet = { ...net };
 const realChild = { ...childProcess };
 
+try {
+  const mainArg = process?.argv?.[1];
+  if (typeof mainArg === "string" && mainArg && mainArg !== "-e") {
+    const absMain = path.resolve(mainArg);
+    const inferred = packageNameFromResolvedFilename(absMain);
+    if (typeof inferred === "string" && !inferred.startsWith("<pm:")) MAIN_PKG = inferred;
+  }
+} catch {}
+
 let logFd = null;
 function ensureLogFd() {
   if (logFd !== null) return logFd;
@@ -175,13 +232,12 @@ try {
   Module._load = function (request, parent, isMain) {
     let resolved = null;
     try {
-      resolved = realResolveFilename(request, parent, isMain);
+      resolved = realResolveFilename.apply(this, arguments);
     } catch {
       return realModuleLoad.apply(this, arguments);
     }
 
-    const pkgNameRaw = typeof resolved === "string" ? packageNameFromFilePath(resolved) : null;
-    const pkgName = pkgNameRaw ? classifyPackageDisplayName(pkgNameRaw) : null;
+    const pkgName = typeof resolved === "string" ? packageNameFromResolvedFilename(resolved) : null;
 
     if (typeof pkgName === "string") {
       return pkgAls.run(pkgName, () => realModuleLoad.apply(this, arguments));
@@ -195,6 +251,7 @@ function baseArgs(args) { return { argv: redactObject(args) }; }
 function currentPkgAndMaybeStack() {
   const store = pkgAls.getStore();
   if (typeof store === "string") return { pkg: store, stack: null };
+  if (typeof MAIN_PKG === "string") return { pkg: MAIN_PKG, stack: null };
   const stack = new Error("stack").stack;
   return { pkg: inferPackageFromStack(stack), stack };
 }

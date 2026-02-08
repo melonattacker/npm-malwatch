@@ -1,0 +1,10 @@
+{
+  "name": "demo2-victim",
+  "private": true,
+  "version": "0.0.0",
+  "description": "A benign-looking local package that depends on demo2-evil.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "demo2-evil": "file:../evil-pkg"
+  }
+}

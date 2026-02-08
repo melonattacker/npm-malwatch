@@ -79,20 +79,29 @@ function listNpmStylePackageJsonPaths(nodeModulesRoot: string, max: number): str
     return out;
   }
 
+  const isDirLike = (p: string): boolean => {
+    try {
+      return Deno.statSync(p).isDirectory;
+    } catch {
+      return false;
+    }
+  };
+
   try {
     const entries = [...Deno.readDirSync(nodeModulesRoot)].sort((a, b) => a.name.localeCompare(b.name));
     for (const e of entries) {
       if (out.length >= max) break;
-      if (!e.isDirectory) continue;
       if (e.name === ".bin" || e.name === ".pnpm") continue;
 
       const full = join(nodeModulesRoot, e.name);
+      if (!isDirLike(full)) continue;
       if (e.name.startsWith("@")) {
         try {
           const scopedEntries = [...Deno.readDirSync(full)].sort((a, b) => a.name.localeCompare(b.name));
           for (const se of scopedEntries) {
             if (out.length >= max) break;
-            if (!se.isDirectory) continue;
+            const scopedFull = join(full, se.name);
+            if (!isDirLike(scopedFull)) continue;
             out.push(join(full, se.name, "package.json"));
           }
         } catch {
@@ -199,7 +208,12 @@ export function scanNodeModulesForScripts(cwd: string, opts: PreflightOptions): 
 }
 
 export function formatPreflightText(report: PreflightReport): string {
-  const useColor = Deno.isatty(Deno.stdout.rid);
+  const useColor =
+    typeof (Deno.stdout as any).isTerminal === "function"
+      ? (Deno.stdout as any).isTerminal()
+      : typeof (Deno as any).isatty === "function"
+        ? (Deno as any).isatty((Deno.stdout as any).rid)
+        : false;
   const BOLD = useColor ? "\x1b[1m" : "";
   const DIM = useColor ? "\x1b[2m" : "";
   const RESET = useColor ? "\x1b[0m" : "";

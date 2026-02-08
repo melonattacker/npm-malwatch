@@ -4,4 +4,11 @@ node_modules
 coverage
 .DS_Store
 npm-malwatch-fixture.tmp
-demos/**
+demos/**/node_modules
+demos/**/.npm-malwatch
+demos/**/*.tmp
+demos/**/*.txt
+demos/**/package-lock.json
+demos/**/pnpm-lock.yaml
+demos/**/yarn.lock
+demos/**/npm-shrinkwrap.json

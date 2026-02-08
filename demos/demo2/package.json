@@ -1,0 +1,10 @@
+{
+  "name": "npm-malwatch-demo2",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Demo project for npm-malwatch (simulated malicious install script via local transitive dependency).",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "demo2-victim": "file:./victim-pkg"
+  }
+}

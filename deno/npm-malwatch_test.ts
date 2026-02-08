@@ -289,6 +289,31 @@ Deno.test("preflight scan finds npm scoped + filters script keys", async () => {
   assertEquals(report.packages[0].scripts.prepare, "echo prep");
 });
 
+Deno.test("preflight scan finds scripts in symlinked node_modules package", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "npm-malwatch-preflight-symlink-" });
+  await Deno.mkdir(`${tmp}/packages/a`, { recursive: true });
+  await Deno.writeTextFile(
+    `${tmp}/packages/a/package.json`,
+    JSON.stringify({ name: "a", version: "1.0.0", scripts: { postinstall: "node postinstall.js" } }),
+  );
+
+  await Deno.mkdir(`${tmp}/node_modules`, { recursive: true });
+  try {
+    Deno.symlinkSync(`${tmp}/packages/a`, `${tmp}/node_modules/a`);
+  } catch {
+    // Some environments disallow symlinks. Skip.
+    return;
+  }
+
+  const report = scanNodeModulesForScripts(tmp, {
+    includePm: false,
+    maxPackages: 20000,
+    scriptKeys: ["postinstall"]
+  });
+  assertEquals(report.packagesWithScripts, 1);
+  assertEquals(report.packages[0].name, "a");
+});
+
 Deno.test("preflight scan finds pnpm layout (scoped + unscoped)", async () => {
   const tmp = await Deno.makeTempDir({ prefix: "npm-malwatch-preflight-pnpm-" });
   await Deno.mkdir(`${tmp}/node_modules/.pnpm/a@1.0.0/node_modules/a`, { recursive: true });

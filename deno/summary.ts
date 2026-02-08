@@ -228,7 +228,12 @@ export function formatSummaryCsv(summary: Summary): string {
 }
 
 export function formatSummaryText(summary: Summary): string {
-  const useColor = Deno.isatty(Deno.stdout.rid);
+  const useColor =
+    typeof (Deno.stdout as any).isTerminal === "function"
+      ? (Deno.stdout as any).isTerminal()
+      : typeof (Deno as any).isatty === "function"
+        ? (Deno as any).isatty((Deno.stdout as any).rid)
+        : false;
   const BOLD = useColor ? "\x1b[1m" : "";
   const DIM = useColor ? "\x1b[2m" : "";
   const RESET = useColor ? "\x1b[0m" : "";
